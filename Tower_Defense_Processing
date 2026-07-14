@@ -1,0 +1,401 @@
+import processing.serial.*;
+
+PImage Water;
+PImage Fly;
+PImage LilyPad1;
+PImage LilyPad2;
+PImage LilyPad3;
+PImage LilyPad4;
+PImage Nexus;
+PImage Start;
+
+PFont DynaPuff;
+
+Serial serialPort;
+
+String leaderboard[] = new String[10];  //Holder for leaderboard values
+
+int NUM_OF_VALUES_FROM_PROCESSING = 1;  //# of Expected Processing outputs
+int processing_values[] = new int[NUM_OF_VALUES_FROM_PROCESSING];
+
+int NUM_OF_VALUES_FROM_ARDUINO = 16;  //# of Expected Arduino inputs
+int NUM_SPACES = 4;  //# of spaces in a row
+int BREAKPOINT = 4; //# of rows
+int arduino_values[] = new int[NUM_OF_VALUES_FROM_ARDUINO];
+int board_state[][] = new int[BREAKPOINT][NUM_SPACES];
+
+ArrayList<Enemy> enemies; //Holder for enemies
+int spawnTimer = 0; //Keeps track of how long since enemy has spawned
+int spawnInterval = 30; //How fast enemies spawn
+
+ArrayList<Tower> towers;  //Holder for towers
+//int towerInfo [] = new int[NUM_OF_VALUES_FROM_ARDUINO]; //Holder to keep track of what lilypad to draw
+
+int nexusX, nexusY;
+int nexusHealth = 3;  //Initial health value
+int nexusRadius = 50; //Area where damage can be taken
+
+boolean receiving = false;  //Is Processing receiving Arduino input? If yes, true. If no, false.
+boolean gameOver = false; //Is the game over (Nexus still has health)
+
+float startTime;  //Start time of current run
+float previousTime; //Holder for leaderboard sorting
+
+void setup() {
+  Water = loadImage("Water.png");
+  
+  Start = loadImage("Start.png");
+  Start.resize(int(width*0.9), int(height*0.9));
+
+  Fly = loadImage("Fly.png");
+  Fly.resize(50, 50);
+
+  // LilyPad1 = loadImage("LilyPad1.png");
+  // LilyPad1.resize(50, 50);
+
+  // LilyPad2 = loadImage("LilyPad2.png");
+  // LilyPad2.resize(50, 50);
+
+  // LilyPad3 = loadImage("LilyPad3.png");
+  // LilyPad3.resize(50, 50);
+
+  LilyPad4 = loadImage("LilyPad4.png");
+  LilyPad4.resize(100, 100);
+
+  Nexus = loadImage("Nexus.png");
+  Nexus.resize(150, 150);
+
+  DynaPuff = createFont("DynaPuff.ttf", 50);
+
+  size(800, 800);
+  enemies = new ArrayList<Enemy>();
+  towers = new ArrayList<Tower>();
+
+  //for (int i = 0; i < towerInfo.size; i++) {
+  //  towerInfo[i] = random(1,5);
+  //}
+  for (int i = 0; i < leaderboard.length; i++) {
+    leaderboard[i] = str(0);
+  }
+
+  nexusX = width/2;
+  nexusY = height/2;
+
+  printArray(Serial.list());
+  serialPort = new Serial(this, "/dev/cu.usbmodem101", 9600);
+}
+
+void draw() {
+  if (gameOver) {
+    showGameOver();
+    return;
+  } else if (!receiving && !gameOver) {
+    background(255);
+    imageMode(CENTER);
+    image(Start, width/2, height/2+50);
+    textFont(DynaPuff);
+    textAlign(CENTER, CENTER);
+    fill(0);
+    text("Guardian Geckos", width/2, height/19);
+    if (serialPort.available() > 0) {
+      String in = serialPort.readStringUntil(10);
+      if (in != null && in.trim().equals("Start")) {
+        receiving = true;
+        startTime = millis();
+      }
+    }
+  } else if (receiving && !gameOver) {
+    image(Water, 0, 0);
+    stroke(255);
+    fill(255);
+    int m = millis();
+    imageMode(CORNER);
+
+    //for (int i = 0; i < BREAKPOINT; i++) {
+    //  for (int j = 0; j < NUM_SPACES; j++) {
+    //    board_state[i][j] = 1;
+    //  }
+    //}
+
+    getSerialData();
+    int count = 0;
+    for (int i = 0; i < 4; i++) {
+      for (int j = 0; j < 4; j++) {
+        if (arduino_values[count] == 1) {
+          board_state[i][j] = 1;
+        } else {
+          board_state[i][j] = 0;
+        }
+        count++;
+      }
+    }
+
+    int incrementX = width/(NUM_SPACES+1);
+    int incrementY = height/(NUM_SPACES+1);
+    for (int i = 0; i < BREAKPOINT; i++) {
+      for (int j = 0; j < NUM_SPACES; j++) {
+        if (board_state[i][j] == 1) {
+          int x = incrementX * (j+1);
+          int y = incrementY * (i+1);
+          towers.add(new Tower(x, y));
+          circle(x, y, 20);
+        }
+      }
+    }
+
+    //NEXUS
+    image(Nexus, nexusX - 75, nexusY - 75);
+
+    //HEALTH INFO
+    for (int i = 0; i < nexusHealth; i++) {
+      fill(255, 0, 0);
+      heart(20 + i*30, height - 20, 10);
+    }
+
+    spawnTimer++;
+    if (spawnTimer >= spawnInterval) {
+      enemies.add(spawnEnemy());
+      spawnTimer = 0;
+    }
+
+    for (int i = enemies.size() - 1; i >= 0; i--) {
+      Enemy e = enemies.get(i);
+      e.update();
+      e.display();
+
+      if (dist(e.x, e.y, nexusX, nexusY) < nexusRadius) {
+        nexusHealth--;
+        enemies.remove(i);
+        if (nexusHealth <= 0) {
+          processing_values[0] = 1;
+          sendSerialData();
+          receiving = false;
+          float timeElapsed = millis() - startTime;
+          updateLeaderboard(timeElapsed);
+          gameOver = true;
+        }
+      }
+    }
+    if ((m - startTime)>=30000) {
+      spawnInterval = 0;
+    } else if ((m - startTime)>=20000) {
+      spawnInterval = 10;
+    } else if ((m - startTime)>=10000) {
+      spawnInterval = 20;
+    }
+    updateTowers();
+  }
+}
+
+//ENEMY
+Enemy spawnEnemy() {
+  float x, y;
+  int side = int(random(4)); // 0: TOP, 1: RIGHT, 2: LEFT, 3: BOTTOM
+  if (side == 0) {
+    x = random(width);
+    y = 0;
+  } else if (side == 1) {
+    x = width;
+    y = random(height);
+  } else if (side == 2) {
+    x = 0;
+    y = random(height);
+  } else {
+    x = random(width);
+    y = height;
+  }
+  return new Enemy(x, y, nexusX, nexusY);
+}
+
+class Enemy {
+  float x, y;
+  float targetX, targetY;
+  float speed = 5;
+  float dx, dy;
+
+  Enemy(float startX, float startY, float tx, float ty) {
+    x = startX;
+    y = startY;
+    targetX = tx;
+    targetY = ty;
+
+    float angle = atan2(targetY - y, targetX - x);
+    dx = cos(angle) * speed;
+    dy = sin(angle) * speed;
+  }
+
+  void update() {
+    x += dx;
+    y += dy;
+  }
+
+  void display() {
+    image(Fly, x, y);
+  }
+}
+
+//TOWERS
+void updateTowers() {
+  int incrementX = width/(NUM_SPACES+1);
+  int incrementY = height/(NUM_SPACES+1);
+
+  towers.clear();
+
+  for (int i = 0; i < BREAKPOINT; i++) {
+    for (int j = 0; j < NUM_SPACES; j++) {
+      if (board_state[i][j] == 1) {
+        int x = incrementX * (j+1);
+        int y = incrementY * (i+1);
+        towers.add(new Tower(x, y));
+      }
+    }
+  }
+
+  for (Tower t : towers) {
+    t.display();
+    t.shoot(enemies);
+  }
+}
+
+class Tower {
+  float x, y;
+  float range = width/10;
+  int cooldown = 0;
+  int cooldownTime = 30; // frames between shots
+
+  Tower(float tx, float ty) {
+    x = tx;
+    y = ty;
+  }
+
+  void display() {
+    imageMode(CENTER);
+    //int r = int(random(1, 5));
+    //if (r == 1) {
+    //  image(LilyPad1, x - 25, y - 25);
+    //} else if (r == 2) {
+    //  image(LilyPad2, x - 25, y - 25);
+    //} else if (r ==3 ) {
+    //  image(LilyPad3, x - 25, y - 25);
+    //} else {
+    image(LilyPad4, x, y);
+    //}
+
+    noFill();
+    stroke(0, 255, 0, 100);
+    ellipse(x, y, range*2, range*2);
+    imageMode(CORNER);
+  }
+
+  void shoot(ArrayList<Enemy> enemies) {
+    if (cooldown > 0) {
+      cooldown--;
+      return;
+    }
+    for (int i = 0; i < enemies.size(); i++) {
+      Enemy e = enemies.get(i);
+      float d = dist(x, y, e.x, e.y);
+      if (d < range) {
+        enemies.remove(i);
+        cooldown = cooldownTime;
+        break;
+      }
+    }
+  }
+}
+
+//HEARTS
+void heart(float x, float y, float size) {
+  beginShape();
+  vertex(x, y);
+  bezierVertex(x - size/2, y - size/2, x - size, y + size/3, x, y + size);
+  bezierVertex(x + size, y + size/3, x + size/2, y - size/2, x, y);
+  endShape(CLOSE);
+}
+
+void updateLeaderboard(float time) {
+  time /= 1000.0; // convert to seconds
+  for (int i = 0; i < leaderboard.length; i++) {
+    float currentTime = float(leaderboard[i]);
+
+    if (time > currentTime) {
+      // shift lower scores down
+      for (int j = leaderboard.length - 1; j > i; j--) {
+        leaderboard[j] = leaderboard[j - 1];
+      }
+      leaderboard[i] = nf(time, 0, 2); // format to 2 decimal places
+      break;
+    }
+  }
+}
+
+
+void showGameOver() {
+  // fill(#000000, 50);
+  // rect(-50, -50, width+100, height+100);
+  fill(0);
+  textSize(30);
+  textAlign(CENTER, BOTTOM);
+  text("Leaderboard", width/2, height/7 - 50);
+
+  int lineHeight = 50;
+  for (int i = 0; i<leaderboard.length; i++) {
+    text(leaderboard[i], width/2, height/7 + (i * lineHeight));
+  }
+  text("Press the button to try again!", width/2, height - 100);
+
+  if (serialPort.available() > 0) {
+    String in = serialPort.readStringUntil(10);
+    if (in != null && in.trim().equals("Start")) {
+      restartGame();
+    }
+  }
+}
+
+void restartGame() {
+  gameOver = false;
+  receiving = true;
+  startTime = millis();
+  nexusHealth = 3;
+  spawnTimer = 0;
+  spawnInterval = 30; // reset as needed
+  enemies.clear();
+  towers.clear();
+  serialPort.clear();
+  loop();  // resumes draw()
+}
+
+//ARDUINO INPUT
+void getSerialData() {
+  while (serialPort.available() > 0) {
+    String in = serialPort.readStringUntil(10);
+    if (in != null) {
+      print("From Arduino: " + in);
+      String[] serialInArray = split(trim(in), ",");
+      if (serialInArray.length == NUM_OF_VALUES_FROM_ARDUINO) {
+        for (int i=0; i<serialInArray.length; i++) {
+          arduino_values[i] = int(serialInArray[i]);
+        }
+      }
+    }
+  }
+}
+
+//ARDUINO OUTPUT
+void sendSerialData() {
+  String data = "";
+  for (int i=0; i<processing_values.length; i++) {
+    data += processing_values[i];
+    // if i is less than the index number of the last element in the values array
+    if (i < processing_values.length-1) {
+      data += ",";  // add splitter character "," between each values element
+    }
+    // if it is the last element in the values array
+    else {
+      data += "\n";  // add the end of data character "n"
+    }
+  }
+  // write to Arduino
+  serialPort.write(data);
+  print("To Arduino: " + data);  // this prints to the console the values going to Arduino
+}
